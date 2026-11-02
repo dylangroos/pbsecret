@@ -2,6 +2,26 @@
 # Acceptance tests for pbsecret. Saves and restores the plain-text clipboard.
 set -u
 PB=${PB:-$(cd "$(dirname "$0")" && pwd)/pbsecret}
+if [ -e /dev/clipboard ]; then # Windows: Git Bash, MSYS2, Cygwin
+  win_clipboard() {
+    powershell.exe -NoProfile -NonInteractive -STA -Command "Add-Type -AssemblyName System.Windows.Forms; $1"
+  }
+  pbpaste() { cat /dev/clipboard; }
+  pbcopy() {
+    local data
+    data=$(cat; printf x)
+    data=${data%x}
+    if [ -n "$data" ]; then printf '%s' "$data" > /dev/clipboard
+    else win_clipboard '[Windows.Forms.Clipboard]::Clear()'; fi
+  }
+  concealed_types() {
+    win_clipboard '[Windows.Forms.Clipboard]::GetDataObject().GetFormats() -join " "' | tr -d '\r'
+  }
+else
+  concealed_types() {
+    osascript -l JavaScript -e 'ObjC.import("AppKit"); ObjC.deepUnwrap($.NSPasteboard.generalPasteboard.types).join(" ")'
+  }
+fi
 saved=$(pbpaste; printf x)
 saved=${saved%x}
 trap 'printf "%s" "$saved" | pbcopy' EXIT
@@ -108,8 +128,9 @@ check "masks secret split across writes" "x *** y" "$out"
 out=$(echo s3cr3t | "$PB" --copy)
 check "copy message" "copied 6 bytes" "$out"
 check "copy clipboard" "s3cr3t" "$(pbpaste)"
-types=$(osascript -l JavaScript -e 'ObjC.import("AppKit"); ObjC.deepUnwrap($.NSPasteboard.generalPasteboard.types).join(" ")')
-[[ $types == *org.nspasteboard.ConcealedType* ]] && concealed=yes || concealed="no ($types)"
+types=$(concealed_types)
+[[ $types == *org.nspasteboard.ConcealedType* || $types == *ExcludeClipboardContentFromMonitorProcessing* ]] \
+  && concealed=yes || concealed="no ($types)"
 check "copy marks concealed" "yes" "$concealed"
 
 rm -rf "$tmp"
